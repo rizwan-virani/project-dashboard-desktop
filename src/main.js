@@ -102,11 +102,8 @@ function createWindow(appUrl) {
     if (isExternal(url)) { event.preventDefault(); shell.openExternal(url); }
   });
 
-  // Closing the window hides it to the tray so the app stays ready to reopen
-  // instantly (and the local model stays warm). Fully quit from the tray menu.
-  mainWindow.on("close", (e) => {
-    if (!isQuitting) { e.preventDefault(); mainWindow.hide(); }
-  });
+  // Closing the window quits the app. Every launch is then a clean start that
+  // reloads data from disk — no lingering instance can sit showing stale/empty.
 }
 
 function showWindow(appUrl) {
@@ -170,7 +167,6 @@ app.whenReady().then(async () => {
   const appUrl = appOrigin + "/index.html";
 
   reconcileLoginItem();
-  buildTray(appUrl);
   createWindow(appUrl);
   ai.warmup(); // preload the local model so the first AI draft isn't a cold start
   updater.initAutoUpdates(app); // check GitHub for a newer version, download in background
@@ -178,6 +174,5 @@ app.whenReady().then(async () => {
   app.on("activate", () => showWindow(appUrl));
 });
 
-// Closing the window only hides it to the tray; the app exits via the tray's
-// "Quit Project Hub" (or before-quit), keeping data saves and the model warm.
-app.on("window-all-closed", () => {});
+// Closing the window quits the app (standard desktop behavior).
+app.on("window-all-closed", () => { app.quit(); });
