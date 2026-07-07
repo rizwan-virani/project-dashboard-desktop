@@ -9,7 +9,13 @@ const { buildMenu } = require("./menu");
 const settings = require("./settings");
 const ai = require("./ai");
 const updater = require("./updater");
-const dataServer = require("./server");
+const store = require("./store");
+
+// Renderer <-> main: the data "database" is a single JSON file read/written here.
+ipcMain.handle("store:load", () => store.readSync());
+ipcMain.handle("store:save", (_evt, state) => store.saveGuarded(state));
+// Synchronous save used on window close, so a last edit can't be lost on quit.
+ipcMain.on("store:save-sync", (evt, state) => { try { store.writeSync(state); } catch {} evt.returnValue = true; });
 
 // Renderer -> main: draft a description with the local model.
 ipcMain.handle("ai:draft", (_evt, { title, category }) => ai.draft(title, category));
@@ -41,30 +47,9 @@ if (!gotLock) {
 proto.registerScheme();
 
 let mainWindow = null;
-let tray = null;
 let isQuitting = false;
-let appOrigin = "";
 
 const ICON = path.join(__dirname, "..", "assets", "icon.ico");
-
-async function startServer(appRoot) {
-  const dataFile = path.join(app.getPath("userData"), "data.json");
-  // Snapshot existing data before this session touches it (rolling backups).
-  await dataServer.backup(dataFile);
-  const preferred = settings.get("serverPort", 8770);
-  const tries = [preferred, 8770, 8771, 8772, 8773, 8774, 8775, 8776, 8777, 8778, 8779]
-    .filter((v, i, a) => a.indexOf(v) === i);
-  for (const port of tries) {
-    try {
-      const { port: bound } = await dataServer.start({ appRoot, dataFile, port });
-      settings.set("serverPort", bound);
-      return bound;
-    } catch (e) {
-      if (!(e && e.code === "EADDRINUSE")) throw e;
-    }
-  }
-  throw new Error("No free port for the data server (8770-8779).");
-}
 
 function createWindow(appUrl) {
   mainWindow = new BrowserWindow({
@@ -92,8 +77,8 @@ function createWindow(appUrl) {
   buildMenu({ win: mainWindow, homeUrl: appUrl });
   mainWindow.loadURL(appUrl);
 
-  // Links to OTHER sites open in the OS browser; the app's own origin stays in-app.
-  const isExternal = (url) => (url.startsWith("http:") || url.startsWith("https:")) && !url.startsWith(appOrigin);
+  // The app runs on projecthub://; any http(s) link is external -> OS browser.
+  const isExternal = (url) => url.startsWith("http:") || url.startsWith("https:");
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isExternal(url)) { shell.openExternal(url); return { action: "deny" }; }
     return { action: "allow" };
@@ -127,51 +112,32 @@ function revealWindow(win) {
   win.webContents.focus();
 }
 
-function buildTray(appUrl) {
-  try {
-    tray = new Tray(nativeImage.createFromPath(ICON));
-    tray.setToolTip("Project Hub");
-    const menu = Menu.buildFromTemplate([
-      { label: "Open Project Hub", click: () => showWindow(appUrl) },
-      { type: "separator" },
-      { label: "Quit Project Hub", click: () => { isQuitting = true; app.quit(); } }
-    ]);
-    tray.setContextMenu(menu);
-    tray.on("click", () => showWindow(appUrl));
-    tray.on("double-click", () => showWindow(appUrl));
-  } catch (e) {
-    /* tray is a convenience; ignore if it fails */
-  }
-}
-
 function reconcileLoginItem() {
   const want = settings.get("openAtLogin", true);
   try { app.setLoginItemSettings({ openAtLogin: want }); } catch { /* ignore */ }
 }
 
-app.on("second-instance", () => showWindow(appOrigin + "/index.html"));
+app.on("second-instance", () => showWindow(proto.homeUrl));
 app.on("before-quit", () => { isQuitting = true; });
 
 app.whenReady().then(async () => {
   const appRoot = resolveAppRoot();
+  proto.registerHandler(appRoot); // serve the app over projecthub:// (no HTTP server, no port)
 
   // Dev helper: generate assets/icon.ico from the brand mark, then quit.
   if (process.env.PROJECTHUB_MKICON) {
-    proto.registerHandler(appRoot);
     require("./makeIcon").run(appRoot).then(() => app.exit(0));
     return;
   }
 
-  const port = await startServer(appRoot);
-  appOrigin = "http://127.0.0.1:" + port;
-  const appUrl = appOrigin + "/index.html";
+  await store.backup(); // snapshot data.json before this session touches it
 
   reconcileLoginItem();
-  createWindow(appUrl);
+  createWindow(proto.homeUrl); // loads projecthub://app/index.html
   ai.warmup(); // preload the local model so the first AI draft isn't a cold start
   updater.initAutoUpdates(app); // check GitHub for a newer version, download in background
 
-  app.on("activate", () => showWindow(appUrl));
+  app.on("activate", () => showWindow(proto.homeUrl));
 });
 
 // Closing the window quits the app (standard desktop behavior).
