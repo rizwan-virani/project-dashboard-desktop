@@ -12,7 +12,14 @@ const updater = require("./updater");
 const store = require("./store");
 
 // Renderer <-> main: the data "database" is a single JSON file read/written here.
-ipcMain.handle("store:load", () => store.readSync());
+function loadLog(msg) {
+  try { require("fs").appendFileSync(path.join(app.getPath("userData"), "load-log.txt"), new Date().toISOString() + " " + msg + "\n"); } catch {}
+}
+ipcMain.handle("store:load", () => {
+  const r = store.loadRobust();
+  loadLog("load source=" + r.source + " count=" + r.count + " tries=" + r.tries + " file=" + r.file + (r.err ? " err=" + r.err : ""));
+  return r.state;
+});
 ipcMain.handle("store:save", (_evt, state) => store.saveGuarded(state));
 // Synchronous save used on window close, so a last edit can't be lost on quit.
 ipcMain.on("store:save-sync", (evt, state) => { try { store.writeSync(state); } catch {} evt.returnValue = true; });

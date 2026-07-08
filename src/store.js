@@ -74,4 +74,53 @@ async function saveGuarded(state) {
   return true;
 }
 
-module.exports = { readSync, writeSync, saveGuarded, backup, dataFile };
+function backupsDir() { return path.join(path.dirname(dataFile()), "backups"); }
+
+// Newest backup that actually has projects (with its mtime).
+function latestNonEmptyBackup() {
+  try {
+    const dir = backupsDir();
+    if (!fs.existsSync(dir)) return null;
+    const files = fs.readdirSync(dir).filter((x) => x.startsWith("data-") && x.endsWith(".json")).sort().reverse();
+    for (const name of files) {
+      const p = path.join(dir, name);
+      try {
+        const st = JSON.parse(stripBom(fs.readFileSync(p, "utf8")));
+        if (st && Array.isArray(st.projects) && st.projects.length > 0) return { state: st, mtime: fs.statSync(p).mtimeMs, name };
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+// Robust startup load. Retries the read; if the file comes back empty or
+// unreadable while a non-empty backup exists, recover from the backup so the
+// window is NEVER blank when data actually exists. Respects a genuine
+// "delete all" (data.json written more recently than the newest backup).
+// Returns { state, source, count, tries, file, err } for logging.
+function loadRobust() {
+  const f = dataFile();
+  let state = null, err = null, tries = 0, readOk = false;
+  for (let i = 0; i < 6; i++) {
+    tries = i + 1;
+    try {
+      const raw = fs.readFileSync(f, "utf8");
+      const st = JSON.parse(stripBom(raw));
+      if (st && Array.isArray(st.projects)) { state = st; readOk = true; break; }
+    } catch (e) {
+      err = String((e && e.message) || e);
+      const t = Date.now(); while (Date.now() - t < 100) {} // brief sync backoff before retry
+    }
+  }
+  if (readOk && state.projects.length > 0) return { state, source: "file", count: state.projects.length, tries, file: f, err };
+  const b = latestNonEmptyBackup();
+  if (b) {
+    if (!readOk) return { state: b.state, source: "recover:read-failed", count: b.state.projects.length, tries, file: f, err };
+    let fMtime = 0; try { fMtime = fs.statSync(f).mtimeMs; } catch {}
+    if (fMtime > b.mtime + 2000) return { state, source: "file-empty:fresh-delete", count: 0, tries, file: f, err };
+    return { state: b.state, source: "recover:file-empty-stale", count: b.state.projects.length, tries, file: f, err };
+  }
+  return { state: state || { projects: [] }, source: readOk ? "file-empty:no-backup" : "empty:no-backup", count: 0, tries, file: f, err };
+}
+
+module.exports = { readSync, writeSync, saveGuarded, backup, dataFile, loadRobust };
