@@ -13,7 +13,11 @@ const store = require("./store");
 
 // Renderer <-> main: the data "database" is a single JSON file read/written here.
 function loadLog(msg) {
-  try { require("fs").appendFileSync(path.join(app.getPath("userData"), "load-log.txt"), new Date().toISOString() + " " + msg + "\n"); } catch {}
+  try {
+    const fs = require("fs");
+    fs.mkdirSync(store.DATA_DIR, { recursive: true });
+    fs.appendFileSync(store.logFile(), new Date().toISOString() + " " + msg + "\n");
+  } catch {}
 }
 ipcMain.handle("store:load", () => {
   const r = store.loadRobust();
@@ -137,7 +141,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  await store.backup(); // snapshot data.json before this session touches it
+  store.backup(); // snapshot data.json before this session touches it
 
   reconcileLoginItem();
   createWindow(proto.homeUrl); // loads projecthub://app/index.html
